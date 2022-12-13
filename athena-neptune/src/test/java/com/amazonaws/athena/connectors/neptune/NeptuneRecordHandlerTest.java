@@ -48,6 +48,7 @@ import com.amazonaws.athena.connector.lambda.security.EncryptionKeyFactory;
 import com.amazonaws.athena.connector.lambda.security.LocalKeyFactory;
 import com.amazonaws.services.athena.AmazonAthena;
 import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.PutObjectResult;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectInputStream;
@@ -78,6 +79,7 @@ import org.slf4j.LoggerFactory;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
@@ -123,6 +125,8 @@ public class NeptuneRecordHandlerTest extends TestBase {
                                 .addBitField("property4")
                                 .addBigIntField("property5")
                                 .addFloat4Field("property6")
+                                .addDateMilliField("property7")
+                                .addStringField("property8")
                                 .build();
                                 
                 schemaPGEdgeForRead = SchemaBuilder
@@ -137,6 +141,7 @@ public class NeptuneRecordHandlerTest extends TestBase {
                                 .addBitField("property4")
                                 .addBigIntField("property5")
                                 .addFloat4Field("property6")
+                                .addDateMilliField("property7")
                                 .build();
 
                 allocator = new BlockAllocatorImpl();
@@ -146,9 +151,9 @@ public class NeptuneRecordHandlerTest extends TestBase {
 
                 when(amazonS3.doesObjectExist(anyString(), anyString())).thenReturn(true);
 
-                when(amazonS3.putObject(anyObject(), anyObject(), anyObject(), anyObject()))
+                when(amazonS3.putObject(anyObject()))
                                 .thenAnswer((InvocationOnMock invocationOnMock) -> {
-                                        InputStream inputStream = (InputStream) invocationOnMock.getArguments()[2];
+                                        InputStream inputStream = ((PutObjectRequest) invocationOnMock.getArguments()[0]).getInputStream();
                                         ByteHolder byteHolder = new ByteHolder();
                                         byteHolder.setBytes(ByteStreams.toByteArray(inputStream));
                                         synchronized (mockS3Storage) {
@@ -196,6 +201,8 @@ public class NeptuneRecordHandlerTest extends TestBase {
                 vertex1.property("property4", true);
                 vertex1.property("property5", 12379878123l);
                 vertex1.property("property6", 15.45);
+                vertex1.property("property7", (new Date()));
+                vertex1.property("Property8", "string8");
 
                 Vertex vertex2 = tinkerGraph.addVertex(T.label, "default");
                 vertex2.property("property1", 5);
@@ -204,6 +211,7 @@ public class NeptuneRecordHandlerTest extends TestBase {
                 vertex2.property("property4", true);
                 vertex2.property("property5", 12379878123l);
                 vertex2.property("property6", 13.4523);
+                vertex2.property("property7", (new Date()));
 
                 Vertex vertex3 = tinkerGraph.addVertex(T.label, "default");
                 vertex3.property("property1", 9);
@@ -212,6 +220,8 @@ public class NeptuneRecordHandlerTest extends TestBase {
                 vertex3.property("property4", true);
                 vertex3.property("property5", 12379878123l);
                 vertex3.property("property6", 13.4523);
+                vertex3.property("property7", (new Date()));
+
 
                 //add vertex with missing property values to check for nulls
                 tinkerGraph.addVertex(T.label, "default");

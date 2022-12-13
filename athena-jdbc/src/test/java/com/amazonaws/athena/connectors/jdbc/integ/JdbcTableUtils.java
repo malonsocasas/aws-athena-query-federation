@@ -22,8 +22,10 @@ package com.amazonaws.athena.connectors.jdbc.integ;
 import com.amazonaws.athena.connector.lambda.domain.TableName;
 import com.amazonaws.athena.connectors.jdbc.connection.DatabaseConnectionConfig;
 import com.amazonaws.athena.connectors.jdbc.connection.DatabaseConnectionConfigBuilder;
+import com.amazonaws.athena.connectors.jdbc.connection.DatabaseConnectionInfo;
 import com.amazonaws.athena.connectors.jdbc.connection.GenericJdbcConnectionFactory;
 import com.amazonaws.athena.connectors.jdbc.connection.JdbcConnectionFactory;
+import org.apache.commons.lang3.Validate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -44,29 +46,32 @@ public class JdbcTableUtils
     private final String tableName;
     private final Map environmentVars;
     private final Map properties;
+    private final String engine;
 
     public JdbcTableUtils(String catalog, TableName table, Map environmentVars)
     {
-        this(catalog, table, environmentVars, null);
+        this(catalog, table, environmentVars, null, null);
     }
 
-    public JdbcTableUtils(String catalog, TableName table, Map environmentVars, Map properties)
+    public JdbcTableUtils(String catalog, TableName table, Map environmentVars, Map properties, String engine)
     {
         this.catalog = catalog;
         this.schemaName = table.getSchemaName();
         this.tableName = table.getTableName();
         this.environmentVars = environmentVars;
         this.properties = properties;
+        this.engine = Validate.notBlank(engine);
     }
 
     /**
      * Creates a DB schema.
-     * @throws RuntimeException The SQL statement failed.
+     * @throws Exception The SQL statement failed.
+     * @param databaseConnectionInfo
      */
-    public void createDbSchema()
-            throws RuntimeException
+    public void createDbSchema(DatabaseConnectionInfo databaseConnectionInfo)
+            throws Exception
     {
-        try (Connection connection = getDbConnection()) {
+        try (Connection connection = getDbConnection(databaseConnectionInfo)) {
             // Prepare create schema statement
             String createStatement = String.format("create schema %s;", schemaName);
             PreparedStatement createSchema = connection.prepareStatement(createStatement);
@@ -75,21 +80,18 @@ public class JdbcTableUtils
             createSchema.execute();
             logger.info("Created the DB schema: {}", schemaName);
         }
-        catch(SQLException e) {
-            throw new RuntimeException(String.format("Unable to create DB schema (%s): %s",
-                    schemaName, e.getMessage()), e);
-        }
     }
 
     /**
      * Creates a DB table.
      * @param tableSchema String representing the table's schema (e.g. "year int, first_name varchar").
-     * @throws RuntimeException The SQL statement failed.
+     * @param databaseConnectionInfo
+     * @throws Exception The SQL statement failed.
      */
-    public void createTable(String tableSchema)
-            throws RuntimeException
+    public void createTable(String tableSchema, DatabaseConnectionInfo databaseConnectionInfo)
+            throws Exception
     {
-        try (Connection connection = getDbConnection()) {
+        try (Connection connection = getDbConnection(databaseConnectionInfo)) {
             // Prepare create table statement
             String createStatement = String.format("create table %s.%s (%s);", schemaName, tableName, tableSchema);
             PreparedStatement createTable = connection.prepareStatement(createStatement);
@@ -98,21 +100,18 @@ public class JdbcTableUtils
             createTable.execute();
             logger.info("Created the '{}' table.", tableName);
         }
-        catch(SQLException e) {
-            throw new RuntimeException(String.format("Unable to create table '%s' in DB '%s': %s",
-                    tableName, schemaName, e.getMessage()), e);
-        }
     }
 
     /**
      * Inserts a row into a DB table.
      * @param tableValues String representing the row's values (e.g. "1992, 'James'").
-     * @throws RuntimeException The SQL statement failed.
+     * @param databaseConnectionInfo
+     * @throws Exception The SQL statement failed.
      */
-    public void insertRow(String tableValues)
-            throws RuntimeException
+    public void insertRow(String tableValues, DatabaseConnectionInfo databaseConnectionInfo)
+            throws Exception
     {
-        try (Connection connection = getDbConnection()) {
+        try (Connection connection = getDbConnection(databaseConnectionInfo)) {
 
             // Prepare insert values statements
             String insertStatement = String.format("insert into %s.%s values(%s);", schemaName, tableName, tableValues);
@@ -122,20 +121,18 @@ public class JdbcTableUtils
             insertValues.execute();
             logger.info("Inserted row into the '{}' table.", tableName);
         }
-        catch(SQLException e) {
-            throw new RuntimeException(String.format("Unable to insert row into table '%s': %s",
-                    tableName, e.getMessage()), e);
-        }
     }
 
     /**
      * Gets a JDBC DB connection.
      * @return Connection object.
+     * @param databaseConnectionInfo
      */
-    protected Connection getDbConnection()
+    protected Connection getDbConnection(DatabaseConnectionInfo databaseConnectionInfo)
+            throws Exception
     {
         DatabaseConnectionConfig connectionConfig = getDbConfig();
-        JdbcConnectionFactory connectionFactory = new GenericJdbcConnectionFactory(connectionConfig, properties);
+        JdbcConnectionFactory connectionFactory = new GenericJdbcConnectionFactory(connectionConfig, properties, databaseConnectionInfo);
         return connectionFactory.getConnection(null);
     }
 
@@ -146,10 +143,9 @@ public class JdbcTableUtils
      * environmentVars map.
      */
     protected DatabaseConnectionConfig getDbConfig()
-            throws RuntimeException
     {
         DatabaseConnectionConfigBuilder configBuilder = new DatabaseConnectionConfigBuilder();
-        for (DatabaseConnectionConfig config : configBuilder.properties(environmentVars).build()) {
+        for (DatabaseConnectionConfig config : configBuilder.properties(environmentVars).engine(this.engine).build()) {
             if (config.getCatalog().equals(catalog)) {
                 return config;
             }

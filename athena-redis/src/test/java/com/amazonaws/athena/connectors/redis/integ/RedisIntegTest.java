@@ -88,6 +88,7 @@ public class RedisIntegTest extends IntegrationTestBase
     private static final String STANDALONE_KEY = "standalone";
     private static final String CLUSTER_KEY = "cluster";
     private static final int GLUE_TIMEOUT = 250;
+    private static final String STANDALONE_REDIS_DB_NUMBER = "10";
 
     private final App theApp;
     private final String redisPassword;
@@ -132,6 +133,7 @@ public class RedisIntegTest extends IntegrationTestBase
     @BeforeClass
     @Override
     protected void setUp()
+            throws Exception
     {
         cloudFormationClient = new CloudFormationClient(theApp, getRedisStack());
         try {
@@ -538,6 +540,7 @@ public class RedisIntegTest extends IntegrationTestBase
         tableParams.put("redis-value-type", "hash"); // hash
         tableParams.put("redis-cluster-flag", "false");
         tableParams.put("redis-ssl-flag", "false");
+        tableParams.put("redis-db-number", STANDALONE_REDIS_DB_NUMBER);
         TableInput tableInput = createTableInput(getGlueTable(redisDbName, redisTableNamePrefix + "_1")).withParameters(tableParams);
         glue.updateTable(new UpdateTableRequest().withDatabaseName(redisDbName).withTableInput(tableInput));
 
@@ -558,6 +561,7 @@ public class RedisIntegTest extends IntegrationTestBase
         tableParams.put("redis-value-type", "hash"); // hash
         tableParams.put("redis-cluster-flag", "false");
         tableParams.put("redis-ssl-flag", "false");
+        tableParams.put("redis-db-number", STANDALONE_REDIS_DB_NUMBER);
         TableInput tableInput = createTableInput(getGlueTable(redisDbName, redisTableNamePrefix + "_1")).withParameters(tableParams);
         glue.updateTable(new UpdateTableRequest().withDatabaseName(redisDbName).withTableInput(tableInput));
 
@@ -618,6 +622,7 @@ public class RedisIntegTest extends IntegrationTestBase
         tableParams.put("redis-value-type", "zset"); // zset
         tableParams.put("redis-cluster-flag", "false");
         tableParams.put("redis-ssl-flag", "false");
+        tableParams.put("redis-db-number", STANDALONE_REDIS_DB_NUMBER);
         TableInput tableInput = createTableInput(getGlueTable(redisDbName, redisTableNamePrefix + "_2")).withParameters(tableParams);
         glue.updateTable(new UpdateTableRequest().withDatabaseName(redisDbName).withTableInput(tableInput));
 
@@ -638,6 +643,7 @@ public class RedisIntegTest extends IntegrationTestBase
         tableParams.put("redis-value-type", "zset"); // zset
         tableParams.put("redis-cluster-flag", "false");
         tableParams.put("redis-ssl-flag", "false");
+        tableParams.put("redis-db-number", STANDALONE_REDIS_DB_NUMBER);
         TableInput tableInput = createTableInput(getGlueTable(redisDbName, redisTableNamePrefix + "_2")).withParameters(tableParams);
         glue.updateTable(new UpdateTableRequest().withDatabaseName(redisDbName).withTableInput(tableInput));
 
@@ -698,6 +704,7 @@ public class RedisIntegTest extends IntegrationTestBase
         tableParams.put("redis-value-type", "literal"); // literal
         tableParams.put("redis-cluster-flag", "false");
         tableParams.put("redis-ssl-flag", "false");
+        tableParams.put("redis-db-number", STANDALONE_REDIS_DB_NUMBER);
         TableInput tableInput = createTableInput(getGlueTable(redisDbName, redisTableNamePrefix + "_2")).withParameters(tableParams);
         glue.updateTable(new UpdateTableRequest().withDatabaseName(redisDbName).withTableInput(tableInput));
 
@@ -718,6 +725,7 @@ public class RedisIntegTest extends IntegrationTestBase
         tableParams.put("redis-value-type", "literal"); // literal
         tableParams.put("redis-cluster-flag", "false");
         tableParams.put("redis-ssl-flag", "false");
+        tableParams.put("redis-db-number", STANDALONE_REDIS_DB_NUMBER);
         TableInput tableInput = createTableInput(getGlueTable(redisDbName, redisTableNamePrefix + "_2")).withParameters(tableParams);
         glue.updateTable(new UpdateTableRequest().withDatabaseName(redisDbName).withTableInput(tableInput));
 
@@ -762,5 +770,71 @@ public class RedisIntegTest extends IntegrationTestBase
         glue.updateTable(new UpdateTableRequest().withDatabaseName(redisDbName).withTableInput(tableInput));
 
         selectLiteralValue();
+    }
+
+    // redis keys/values are all stored as plain strings, these don't really apply
+    @Override
+    public void selectIntegerTypeTest()
+    {
+    }
+
+    @Override
+    public void selectVarcharTypeTest()
+    {
+    }
+
+    @Override
+    public void selectBooleanTypeTest()
+    {
+    }
+
+    @Override
+    public void selectSmallintTypeTest()
+    {
+    }
+
+    @Override
+    public void selectBigintTypeTest()
+    {
+    }
+
+    @Override
+    public void selectFloat4TypeTest()
+    {
+    }
+
+    @Override
+    public void selectFloat8TypeTest()
+    {
+    }
+
+    @Override
+    public void selectDateTypeTest()
+    {
+    }
+
+    @Override
+    public void selectTimestampTypeTest()
+    {
+    }
+
+    @Override
+    public void selectByteArrayTypeTest()
+    {
+    }
+
+    @Override
+    public void selectVarcharListTypeTest()
+    {
+    }
+
+    @Override
+    public void selectNullValueTest()
+    {
+    }
+
+    @Override
+    public void selectEmptyTableTest()
+    {
     }
 }

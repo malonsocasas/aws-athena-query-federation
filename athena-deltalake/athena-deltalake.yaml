@@ -2,15 +2,15 @@ Transform: 'AWS::Serverless-2016-10-31'
 
 Metadata:
   AWS::ServerlessRepo::Application:
-    Name: DeltalakeAthenaConnector
-    Description: DeltalakeAthenaConnector Description
+    Name: AthenaDeltalakeConnector
+    Description: 'Enable AWS Athena to communicate with DeltaLake table stored in S3, making them accesible via SQL.'
     Author: 'default author'
     SpdxLicenseId: Apache-2.0
     LicenseUrl: LICENSE.txt
     ReadmeUrl: README.md
     Labels: ['athena-federation']
     HomePageUrl: https://github.com/awslabs/aws-athena-query-federation
-    SemanticVersion: 2021.21.1
+    SemanticVersion: 2022.42.2
     SourceCodeUrl: https://github.com/awslabs/aws-athena-query-federation
 
 Parameters:
@@ -21,6 +21,7 @@ Parameters:
   SpillBucket:
     Description: 'The name of the bucket where this function can spill data.'
     Type: String
+    Default: "rafalslo-athena-events-query-spill"
   DataBucket:
       Description: "The bucket where the Delta tables live."
       Type: String
@@ -40,11 +41,18 @@ Parameters:
     Description: "WARNING: If set to 'true' encryption for spilled data is disabled."
     Default: "false"
     Type: String
+  LambdaRole:
+    Description: "(Optional) A custom role to be used by the Connector lambda"
+    Type: String
+
+Conditions:
+  NotHasLambdaRole: !Equals [!Ref LambdaRole, ""]
 
 Resources:
   ConnectorConfig:
     Type: 'AWS::Serverless::Function'
     Properties:
+      AutoPublishAlias: live
       Environment:
         Variables:
           disable_spill_encryption: !Ref DisableSpillEncryption
@@ -53,20 +61,87 @@ Resources:
           data_bucket: !Ref DataBucket
       FunctionName: !Sub "${AthenaCatalogName}"
       Handler: "com.amazonaws.connectors.athena.deltalake.DeltalakeCompositeHandler"
-      CodeUri: "./target/athena-deltalake-1.1.jar"
+      CodeUri: "./target/athena-deltalake-2022.42.2.jar"
       Description: "Enables Amazon Athena to query Delta Lake tables stored in S3."
-      Runtime: java8
+      Runtime: java11
       Timeout: !Ref LambdaTimeout
       MemorySize: !Ref LambdaMemory
-      Policies:
-        - Statement:
-            - Action:
-                - athena:GetQueryExecution
-                - s3:ListAllMyBuckets
-              Effect: Allow
-              Resource: '*'
-          Version: '2012-10-17'
-        - S3CrudPolicy:
-            BucketName: !Ref SpillBucket
-        - S3CrudPolicy:
-            BucketName: !Ref DataBucket
+      Role: !If [NotHasLambdaRole, !GetAtt FunctionRole.Arn, !Ref LambdaRole]
+
+  FunctionRole:
+    Condition: NotHasLambdaRole
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+
+  FunctionExecutionPolicy:
+    Condition: NotHasLambdaRole
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: FunctionExecutionPolicy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource: '*'
+          - Action:
+              - athena:GetQueryExecution
+              - s3:ListAllMyBuckets
+            Effect: Allow
+            Resource: '*'
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:PutObjectAcl
+              - s3:GetLifecycleConfiguration
+              - s3:PutLifecycleConfiguration
+              - s3:DeleteObject
+            Effect: Allow
+            Resource:
+              - Fn::Sub:
+                  - arn:${AWS::Partition}:s3:::${bucketName}
+                  - bucketName:
+                      Ref: SpillBucket
+              - Fn::Sub:
+                  - arn:${AWS::Partition}:s3:::${bucketName}/*
+                  - bucketName:
+                      Ref: SpillBucket
+          - Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+              - s3:GetObjectVersion
+              - s3:PutObject
+              - s3:PutObjectAcl
+              - s3:GetLifecycleConfiguration
+              - s3:PutLifecycleConfiguration
+              - s3:DeleteObject
+            Effect: Allow
+            Resource:
+              - Fn::Sub:
+                  - arn:${AWS::Partition}:s3:::${bucketName}
+                  - bucketName:
+                      Ref: DataBucket
+              - Fn::Sub:
+                  - arn:${AWS::Partition}:s3:::${bucketName}/*
+                  - bucketName:
+                      Ref: DataBucket
+      Roles:
+        - !Ref FunctionRole

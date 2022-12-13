@@ -83,16 +83,16 @@ public abstract class JdbcMetadataHandler
     /**
      * Used only by Multiplexing handler. All calls will be delegated to respective database handler.
      */
-    protected JdbcMetadataHandler()
+    protected JdbcMetadataHandler(String sourceType)
     {
-        super(null);
+        super(sourceType);
         this.jdbcConnectionFactory = null;
         this.databaseConnectionConfig = null;
     }
 
     protected JdbcMetadataHandler(final DatabaseConnectionConfig databaseConnectionConfig, final JdbcConnectionFactory jdbcConnectionFactory)
     {
-        super(databaseConnectionConfig.getType().getDbName());
+        super(databaseConnectionConfig.getEngine());
         this.jdbcConnectionFactory = Validate.notNull(jdbcConnectionFactory, "jdbcConnectionFactory must not be null");
 
         this.databaseConnectionConfig = Validate.notNull(databaseConnectionConfig, "databaseConnectionConfig must not be null");
@@ -102,7 +102,7 @@ public abstract class JdbcMetadataHandler
     protected JdbcMetadataHandler(final DatabaseConnectionConfig databaseConnectionConfig, final AWSSecretsManager secretsManager,
             final AmazonAthena athena, final JdbcConnectionFactory jdbcConnectionFactory)
     {
-        super(null, secretsManager, athena, databaseConnectionConfig.getType().getDbName(), null, null);
+        super(null, secretsManager, athena, databaseConnectionConfig.getEngine(), null, null);
         this.jdbcConnectionFactory = Validate.notNull(jdbcConnectionFactory, "jdbcConnectionFactory must not be null");
         this.databaseConnectionConfig = Validate.notNull(databaseConnectionConfig, "databaseConnectionConfig must not be null");
     }
@@ -125,13 +125,11 @@ public abstract class JdbcMetadataHandler
 
     @Override
     public ListSchemasResponse doListSchemaNames(final BlockAllocator blockAllocator, final ListSchemasRequest listSchemasRequest)
+            throws Exception
     {
         try (Connection connection = jdbcConnectionFactory.getConnection(getCredentialProvider())) {
             LOGGER.info("{}: List schema names for Catalog {}", listSchemasRequest.getQueryId(), listSchemasRequest.getCatalogName());
             return new ListSchemasResponse(listSchemasRequest.getCatalogName(), listDatabaseNames(connection));
-        }
-        catch (SQLException sqlException) {
-            throw new RuntimeException(sqlException.getErrorCode() + ": " + sqlException.getMessage());
         }
     }
 
@@ -153,14 +151,12 @@ public abstract class JdbcMetadataHandler
 
     @Override
     public ListTablesResponse doListTables(final BlockAllocator blockAllocator, final ListTablesRequest listTablesRequest)
+            throws Exception
     {
         try (Connection connection = jdbcConnectionFactory.getConnection(getCredentialProvider())) {
             LOGGER.info("{}: List table names for Catalog {}, Table {}", listTablesRequest.getQueryId(), listTablesRequest.getCatalogName(), listTablesRequest.getSchemaName());
             return new ListTablesResponse(listTablesRequest.getCatalogName(),
                     listTables(connection, listTablesRequest.getSchemaName()), null);
-        }
-        catch (SQLException sqlException) {
-            throw new RuntimeException(sqlException.getErrorCode() + ": " + sqlException.getMessage());
         }
     }
 
@@ -211,14 +207,12 @@ public abstract class JdbcMetadataHandler
 
     @Override
     public GetTableResponse doGetTable(final BlockAllocator blockAllocator, final GetTableRequest getTableRequest)
+            throws Exception
     {
         try (Connection connection = jdbcConnectionFactory.getConnection(getCredentialProvider())) {
             Schema partitionSchema = getPartitionSchema(getTableRequest.getCatalogName());
             return new GetTableResponse(getTableRequest.getCatalogName(), getTableRequest.getTableName(), getSchema(connection, getTableRequest.getTableName(), partitionSchema),
                     partitionSchema.getFields().stream().map(Field::getName).collect(Collectors.toSet()));
-        }
-        catch (SQLException sqlException) {
-            throw new RuntimeException(sqlException.getErrorCode() + ": " + sqlException.getMessage());
         }
     }
 

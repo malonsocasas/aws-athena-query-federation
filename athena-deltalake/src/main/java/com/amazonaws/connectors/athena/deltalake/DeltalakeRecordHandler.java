@@ -2,14 +2,14 @@
  * #%L
  * athena-deltalake
  * %%
- * Copyright (C) 2019 Amazon Web Services
+ * Copyright (C) 2019 - 2022 Amazon Web Services
  * %%
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
+ * 
  *      http://www.apache.org/licenses/LICENSE-2.0
- *
+ * 
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -22,6 +22,7 @@ package com.amazonaws.connectors.athena.deltalake;
 import com.amazonaws.athena.connector.lambda.QueryStatusChecker;
 import com.amazonaws.athena.connector.lambda.data.BlockSpiller;
 import com.amazonaws.athena.connector.lambda.data.writers.GeneratedRowWriter;
+import com.amazonaws.athena.connector.lambda.data.writers.extractors.Extractor;
 import com.amazonaws.athena.connector.lambda.domain.Split;
 import com.amazonaws.athena.connector.lambda.handlers.RecordHandler;
 import com.amazonaws.athena.connector.lambda.records.ReadRecordsRequest;
@@ -50,12 +51,18 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static com.amazonaws.connectors.athena.deltalake.DeltalakeMetadataHandler.SPLIT_FILE_PROPERTY;
 import static com.amazonaws.connectors.athena.deltalake.DeltalakeMetadataHandler.SPLIT_PARTITION_VALUES_PROPERTY;
 import static com.amazonaws.connectors.athena.deltalake.converter.DeltaConverter.castPartitionValue;
 import static com.amazonaws.connectors.athena.deltalake.converter.ParquetConverter.getExtractor;
+import static com.amazonaws.connectors.athena.deltalake.converter.ParquetConverter.getFactory;
 
 /**
  * Handles data read record requests for the Athena Deltalake Connector.
@@ -71,12 +78,16 @@ public class DeltalakeRecordHandler
 
     private static final String SOURCE_TYPE = "deltalake";
 
-    private Configuration conf;
-    private String dataBucket;
+    private final Configuration conf;
+    private final String dataBucket;
 
     public DeltalakeRecordHandler(String dataBucket)
     {
-        this(AmazonS3ClientBuilder.defaultClient(), AWSSecretsManagerClientBuilder.defaultClient(), AmazonAthenaClientBuilder.defaultClient(), new Configuration(), dataBucket);
+        this(AmazonS3ClientBuilder.defaultClient(),
+            AWSSecretsManagerClientBuilder.defaultClient(),
+            AmazonAthenaClientBuilder.defaultClient(),
+            new Configuration(),
+            dataBucket);
     }
 
     @VisibleForTesting
@@ -99,7 +110,8 @@ public class DeltalakeRecordHandler
      * @return A map of partition values
      * @throws JsonProcessingException
      */
-    protected Map<String, String> deserializePartitionValues(String partitionValuesJson) throws JsonProcessingException {
+    protected Map<String, String> deserializePartitionValues(String partitionValuesJson) throws JsonProcessingException
+    {
         ObjectMapper mapper = new ObjectMapper();
         JsonNode schemaJson = mapper.readTree(partitionValuesJson);
         Map<String, String> partitionValues = new HashMap<>();
@@ -117,7 +129,8 @@ public class DeltalakeRecordHandler
      */
     @Override
     protected void readWithConstraint(BlockSpiller spiller, ReadRecordsRequest recordsRequest, QueryStatusChecker queryStatusChecker)
-            throws IOException {
+            throws IOException
+    {
         logger.info("readWithConstraint: " + recordsRequest);
 
         Split split = recordsRequest.getSplit();
@@ -133,10 +146,12 @@ public class DeltalakeRecordHandler
         String tablePath = String.format("s3a://%s/%s/%s", dataBucket, schemaName, tableName);
         String filePath = String.format("%s/%s", tablePath, relativeFilePath);
 
-        MessageType parquetSchema = ParquetFileReader.open(HadoopInputFile.fromPath(new Path(filePath), conf))
+        ParquetFileReader fileReader = ParquetFileReader.open(HadoopInputFile.fromPath(new Path(filePath), conf));
+        MessageType parquetSchema = fileReader
                 .getFooter()
                 .getFileMetaData()
                 .getSchema();
+        fileReader.close();
 
         List<Field> fields = recordsRequest.getSchema().getFields();
 
@@ -145,17 +160,26 @@ public class DeltalakeRecordHandler
         // Apply column pruning by reading only the requested columns
         Types.MessageTypeBuilder parquetTypeBuilder = Types.buildMessage();
 
-        for(Field field : fields) {
+        for (Field field : fields) {
             String fieldName = field.getName();
             if (partitionNames.contains(fieldName)) {
                 Object partitionValue = castPartitionValue(partitionValues.get(fieldName), field.getType());
                 builder.withExtractor(fieldName, getExtractor(field, Optional.ofNullable(partitionValue)));
             }
             else {
-                builder.withExtractor(fieldName, getExtractor(field));
+                Extractor extractor = getExtractor(field);
+                if (extractor != null) {
+                    builder.withExtractor(fieldName, extractor);
+                }
+                else {
+                    builder.withFieldWriterFactory(fieldName, getFactory(field));
+                }
                 try {
                     parquetTypeBuilder.addField(parquetSchema.getType(fieldName));
-                } catch (InvalidRecordException ignored) {}
+                }
+                catch (InvalidRecordException exc) {
+                    logger.warn(exc.getMessage());
+                }
             }
         }
 
@@ -167,10 +191,12 @@ public class DeltalakeRecordHandler
             .build();
         GeneratedRowWriter rowWriter = builder.build();
 
-        Group record;
-        while((record = reader.read()) != null && queryStatusChecker.isQueryRunning()) {
+        Group record = reader.read();
+        while (record != null && queryStatusChecker.isQueryRunning()) {
             Group finalRecord = record;
             spiller.writeRows((block, rowNum) -> rowWriter.writeRow(block, rowNum, finalRecord) ? 1 : 0);
+            record = reader.read();
         }
+        reader.close();
     }
 }

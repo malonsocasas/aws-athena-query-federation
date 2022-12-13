@@ -24,6 +24,8 @@ import com.amazonaws.athena.connector.lambda.QueryStatusChecker;
 import com.amazonaws.athena.connector.lambda.ThrottlingInvoker;
 import com.amazonaws.athena.connector.lambda.data.Block;
 import com.amazonaws.athena.connector.lambda.data.BlockSpiller;
+import com.amazonaws.athena.connector.lambda.data.writers.GeneratedRowWriter;
+import com.amazonaws.athena.connector.lambda.data.writers.extractors.Extractor;
 import com.amazonaws.athena.connector.lambda.domain.Split;
 import com.amazonaws.athena.connector.lambda.handlers.RecordHandler;
 import com.amazonaws.athena.connector.lambda.records.ReadRecordsRequest;
@@ -34,7 +36,6 @@ import com.amazonaws.athena.connectors.dynamodb.util.DDBTypeUtils;
 import com.amazonaws.services.athena.AmazonAthena;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDB;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClientBuilder;
-import com.amazonaws.services.dynamodbv2.document.ItemUtils;
 import com.amazonaws.services.dynamodbv2.model.AttributeValue;
 import com.amazonaws.services.dynamodbv2.model.QueryRequest;
 import com.amazonaws.services.dynamodbv2.model.QueryResult;
@@ -48,7 +49,6 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import org.apache.arrow.util.VisibleForTesting;
-import org.apache.arrow.vector.types.Types;
 import org.apache.arrow.vector.types.pojo.Field;
 import org.apache.arrow.vector.types.pojo.Schema;
 import org.slf4j.Logger;
@@ -57,11 +57,10 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -91,6 +90,8 @@ public class DynamoDBRecordHandler
 {
     private static final Logger logger = LoggerFactory.getLogger(DynamoDBRecordHandler.class);
     private static final String sourceType = "ddb";
+
+    private static final String DISABLE_PROJECTION_AND_CASING_ENV = "disable_projection_and_casing";
 
     private static final String HASH_KEY_VALUE_ALIAS = ":hashKeyValue";
 
@@ -135,75 +136,84 @@ public class DynamoDBRecordHandler
         // use the property instead of the request table name because of case sensitivity
         String tableName = split.getProperty(TABLE_METADATA);
         invokerCache.get(tableName).setBlockSpiller(spiller);
-        Iterator<Map<String, AttributeValue>> itemIterator = getIterator(split, tableName, recordsRequest.getSchema());
         DDBRecordMetadata recordMetadata = new DDBRecordMetadata(recordsRequest.getSchema());
+
+        String disableProjectionAndCasingEnvValue = System.getenv().getOrDefault(DISABLE_PROJECTION_AND_CASING_ENV, "auto").toLowerCase();
+        logger.info(DISABLE_PROJECTION_AND_CASING_ENV + " environment variable set to: " + disableProjectionAndCasingEnvValue);
+
+        boolean disableProjectionAndCasing = false;
+        if (disableProjectionAndCasingEnvValue.equals("always")) {
+            // This is when the user wants to turn this on unconditionally to
+            // solve their casing issues even when they do not have `set` or
+            // `decimal` columns.
+            disableProjectionAndCasing = true;
+        }
+        else { // *** We default to auto when the variable is not set ***
+            // In the automatic case, we will try to mimic the behavior prior to the support of `set` and `decimal` types as much
+            // as possible.
+            //
+            // Previously, when the user used a Glue Table and had `set` and `decimal` types present, the code would have failed over
+            // to using internal type inference.
+            // Internal type inferencing uses the original column names from DDB since it is doing a partial scan of the DDB table and is
+            // therefore able to read the fields with casing.
+            //
+            // To mimic this behavior at a similar cost, we will just disable projection and casing, where we don't need an additional partial
+            // table scan to infer types, because we are using the glue types.
+            // The only side effect of this is increased network bandwidth usage and latency increase (DDB read units remains the same).
+            // If the DDB Connector and DDB Table are within the same region, this does not cost the user anything extra.
+            // Additionally in regards to bandwidth and latency, in many cases, this will be a wash because we avoid doing a partial table scan
+            // for type inference in this situation now.
+            //
+            // If the user is using `columnMapping`, then we will assume that they have correctly mapped their column names, and we will not
+            // disable projection and casing.
+            disableProjectionAndCasing = recordMetadata.getGlueTableContainedPreviouslyUnsupportedTypes() && recordMetadata.getColumnNameMapping().isEmpty();
+            logger.info("GlueTableContainedPreviouslyUnsupportedTypes: " + recordMetadata.getGlueTableContainedPreviouslyUnsupportedTypes());
+            logger.info("ColumnNameMapping isEmpty: " + recordMetadata.getColumnNameMapping().isEmpty());
+            logger.info("Resolving disableProjectionAndCasing to: " + disableProjectionAndCasing);
+        }
+
+        Iterator<Map<String, AttributeValue>> itemIterator = getIterator(split, tableName, recordsRequest.getSchema(), disableProjectionAndCasing);
         DynamoDBFieldResolver resolver = new DynamoDBFieldResolver(recordMetadata);
+
+        GeneratedRowWriter.RowWriterBuilder rowWriterBuilder = GeneratedRowWriter.newBuilder(recordsRequest.getConstraints());
+        //register extract and field writer factory for each field.
+        for (Field next : recordsRequest.getSchema().getFields()) {
+            Optional<Extractor> extractor = DDBTypeUtils.makeExtractor(next, recordMetadata, disableProjectionAndCasing);
+            //generate extractor for supported data types
+            if (extractor.isPresent()) {
+                rowWriterBuilder.withExtractor(next.getName(), extractor.get());
+            }
+            else {
+                //generate field writer factor for complex data types.
+                rowWriterBuilder.withFieldWriterFactory(next.getName(), DDBTypeUtils.makeFactory(next, recordMetadata, resolver, disableProjectionAndCasing));
+            }
+        }
+
+        GeneratedRowWriter rowWriter = rowWriterBuilder.build();
         long numRows = 0;
-        AtomicLong numResultRows = new AtomicLong(0);
+
         while (itemIterator.hasNext()) {
             if (!queryStatusChecker.isQueryRunning()) {
                 // we can stop processing because the query waiting for this data has already terminated
                 return;
             }
+
+            Map<String, AttributeValue> item = itemIterator.next();
+            if (item == null) {
+                // this can happen regardless of the hasNext() check above for the very first iteration since itemIterator
+                // had not made any DDB calls yet and there may be zero items returned when it does
+                continue;
+            }
+            spiller.writeRows((Block block, int rowNum) -> rowWriter.writeRow(block, rowNum, item) ? 1 : 0);
             numRows++;
-            spiller.writeRows((Block block, int rowNum) -> {
-                Map<String, AttributeValue> item = itemIterator.next();
-                if (item == null) {
-                    // this can happen regardless of the hasNext() check above for the very first iteration since itemIterator
-                    // had not made any DDB calls yet and there may be zero items returned when it does
-                    return 0;
-                }
-
-                boolean matched = true;
-                numResultRows.getAndIncrement();
-                // TODO refactor to use GeneratedRowWriter to improve performance
-                for (Field nextField : recordsRequest.getSchema().getFields()) {
-                    Object value = ItemUtils.toSimpleValue(item.get(nextField.getName()));
-                    Types.MinorType fieldType = Types.getMinorTypeForArrowType(nextField.getType());
-
-                    value = DDBTypeUtils.coerceValueToExpectedType(value, nextField, fieldType, recordMetadata);
-
-                    try {
-                        switch (fieldType) {
-                            case LIST:
-                                // DDB may return Set so coerce to List. Also coerce each List item to the correct type.
-                                List valueAsList = value != null
-                                        ? DDBTypeUtils.coerceListToExpectedType(value, nextField, recordMetadata) : null;
-                                matched &= block.offerComplexValue(nextField.getName(),
-                                        rowNum,
-                                        resolver,
-                                        valueAsList);
-                                break;
-                            case STRUCT:
-                                matched &= block.offerComplexValue(nextField.getName(),
-                                        rowNum,
-                                        resolver,
-                                        value);
-                                break;
-                            default:
-                                matched &= block.offerValue(nextField.getName(), rowNum, value);
-                                break;
-                        }
-
-                        if (!matched) {
-                            return 0;
-                        }
-                    }
-                    catch (Exception ex) {
-                        throw new RuntimeException("Error while processing field " + nextField.getName(), ex);
-                    }
-                }
-                return 1;
-            });
         }
-
-        logger.info("readWithConstraint: numRows[{}] numResultRows[{}]", numRows, numResultRows.get());
+        logger.info("readWithConstraint: numRows[{}]", numRows);
     }
 
     /*
     Converts a split into a Query or Scan request
      */
-    private AmazonWebServiceRequest buildReadRequest(Split split, String tableName, Schema schema)
+    private AmazonWebServiceRequest buildReadRequest(Split split, String tableName, Schema schema, boolean disableProjectionAndCasing)
     {
         validateExpectedMetadata(split.getProperties());
         // prepare filters
@@ -222,7 +232,7 @@ public class DynamoDBRecordHandler
         }
 
         // Only read columns that are needed in the query
-        String projectionExpression = schema.getFields()
+        String projectionExpression = disableProjectionAndCasing ? null : schema.getFields()
                 .stream()
                 .map(field -> {
                     String aliasedName = DDBPredicateUtils.aliasColumn(field.getName());
@@ -272,9 +282,9 @@ public class DynamoDBRecordHandler
     /*
     Creates an iterator that can iterate through a Query or Scan, sending paginated requests as necessary
      */
-    private Iterator<Map<String, AttributeValue>> getIterator(Split split, String tableName, Schema schema)
+    private Iterator<Map<String, AttributeValue>> getIterator(Split split, String tableName, Schema schema, boolean disableProjectionAndCasing)
     {
-        AmazonWebServiceRequest request = buildReadRequest(split, tableName, schema);
+        AmazonWebServiceRequest request = buildReadRequest(split, tableName, schema, disableProjectionAndCasing);
         return new Iterator<Map<String, AttributeValue>>() {
             AtomicReference<Map<String, AttributeValue>> lastKeyEvaluated = new AtomicReference<>();
             AtomicReference<Iterator<Map<String, AttributeValue>>> currentPageIterator = new AtomicReference<>();

@@ -56,6 +56,7 @@ import com.amazonaws.athena.connectors.jdbc.connection.RdsSecretsCredentialProvi
 import com.amazonaws.services.athena.AmazonAthena;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.secretsmanager.AWSSecretsManager;
+import org.apache.arrow.util.VisibleForTesting;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.holders.NullableBigIntHolder;
 import org.apache.arrow.vector.holders.NullableBitHolder;
@@ -99,9 +100,9 @@ public abstract class JdbcRecordHandler
     /**
      * Used only by Multiplexing handler. All invocations will be delegated to respective database handler.
      */
-    protected JdbcRecordHandler()
+    protected JdbcRecordHandler(String sourceType)
     {
-        super(null);
+        super(sourceType);
         this.jdbcConnectionFactory = null;
         this.databaseConnectionConfig = null;
     }
@@ -109,7 +110,7 @@ public abstract class JdbcRecordHandler
     protected JdbcRecordHandler(final AmazonS3 amazonS3, final AWSSecretsManager secretsManager, AmazonAthena athena, final DatabaseConnectionConfig databaseConnectionConfig,
             final JdbcConnectionFactory jdbcConnectionFactory)
     {
-        super(amazonS3, secretsManager, athena, databaseConnectionConfig.getType().getDbName());
+        super(amazonS3, secretsManager, athena, databaseConnectionConfig.getEngine());
         this.jdbcConnectionFactory = Validate.notNull(jdbcConnectionFactory, "jdbcConnectionFactory must not be null");
         this.databaseConnectionConfig = Validate.notNull(databaseConnectionConfig, "databaseConnectionConfig must not be null");
     }
@@ -119,7 +120,7 @@ public abstract class JdbcRecordHandler
         return jdbcConnectionFactory;
     }
 
-    private JdbcCredentialProvider getCredentialProvider()
+    protected JdbcCredentialProvider getCredentialProvider()
     {
         final String secretName = this.databaseConnectionConfig.getSecret();
         if (StringUtils.isNotBlank(secretName)) {
@@ -131,6 +132,7 @@ public abstract class JdbcRecordHandler
 
     @Override
     public void readWithConstraint(BlockSpiller blockSpiller, ReadRecordsRequest readRecordsRequest, QueryStatusChecker queryStatusChecker)
+            throws Exception
     {
         LOGGER.info("{}: Catalog: {}, table {}, splits {}", readRecordsRequest.getQueryId(), readRecordsRequest.getCatalogName(), readRecordsRequest.getTableName(),
                 readRecordsRequest.getSplit().getProperties());
@@ -165,9 +167,6 @@ public abstract class JdbcRecordHandler
                 connection.commit();
             }
         }
-        catch (SQLException sqlException) {
-            throw new RuntimeException(sqlException.getErrorCode() + ": " + sqlException.getMessage(), sqlException);
-        }
     }
 
     /**
@@ -192,7 +191,8 @@ public abstract class JdbcRecordHandler
     /**
      * Creates an Extractor for the given field. In this example the extractor just creates some random data.
      */
-    private Extractor makeExtractor(Field field, ResultSet resultSet, Map<String, String> partitionValues)
+    @VisibleForTesting
+    protected Extractor makeExtractor(Field field, ResultSet resultSet, Map<String, String> partitionValues)
     {
         Types.MinorType fieldType = Types.getMinorTypeForArrowType(field.getType());
 
@@ -275,7 +275,9 @@ public abstract class JdbcRecordHandler
             case VARCHAR:
                 return (VarCharExtractor) (Object context, NullableVarCharHolder dst) ->
                 {
-                    dst.value = resultSet.getString(fieldName);
+                    if (null != resultSet.getString(fieldName)) {
+                        dst.value = resultSet.getString(fieldName);
+                    }
                     dst.isSet = resultSet.wasNull() ? 0 : 1;
                 };
             case VARBINARY:

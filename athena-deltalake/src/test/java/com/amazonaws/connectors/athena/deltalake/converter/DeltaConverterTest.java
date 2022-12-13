@@ -64,19 +64,23 @@ public class DeltaConverterTest {
             createField("d", new ArrowType.Decimal(22, 4, 128), false)
         ));
         Field expectedListField = createField("c", new ArrowType.List(), true, Arrays.asList(
-            createField("c.element", new ArrowType.Int(32, true), false)
+            createField("element", new ArrowType.Int(32, true), false)
         ));
         Field expectedComplexListField = createField("e", new ArrowType.List(), true, Arrays.asList(
-            createField("e.element", new ArrowType.Struct(), true, Arrays.asList(
+            createField("element", new ArrowType.Struct(), true, Arrays.asList(
                 createField("d", new ArrowType.Int(32, true), false)
             ))
         ));
         Field expectedMapField = createField("f", new ArrowType.Map(true), true, Arrays.asList(
-            createField("f.key", new ArrowType.Utf8(), false),
-            createField("f.value", new ArrowType.Utf8(), true)
+            createField("entries", new ArrowType.Struct(), false, Arrays.asList(
+                createField("key", new ArrowType.Utf8(), false),
+                createField("value", new ArrowType.Utf8(), true)
+            ))
         ));
 
+
         List<Field> fields = arrowSchema.getFields();
+
         assertEquals(5, fields.size());
         assertEquals(expectedIntField, fields.get(0));
         assertEquals(expectedStructField, fields.get(1));
